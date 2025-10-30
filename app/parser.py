@@ -85,7 +85,7 @@ def parse_xml_bytes(xml_bytes: bytes):
                     "Expression": tf.get("EXPRESSION") if tf.get("EXPRESSION") else "",
                 })
             for ta in findall(tr, "TABLEATTRIBUTE"):
-                if ta.get("NAME") in ("Lookup Sql Override","Lookup condition","Lookup table name"):
+                if ta.get("NAME") in ("Lookup Sql Override", "Lookup condition", "Lookup table name"):
                     trans_rows.append({
                         "Transformation": tr_name,
                         "Type": tr_type,
@@ -99,7 +99,7 @@ def parse_xml_bytes(xml_bytes: bytes):
                     })
     trans_df = pd.DataFrame(trans_rows)
 
-    # Connectors
+    # Connectors (ordered)
     conn_rows = []
     if mapping is not None:
         for c in findall(mapping, "CONNECTOR"):
@@ -113,7 +113,29 @@ def parse_xml_bytes(xml_bytes: bytes):
             })
     conn_df = pd.DataFrame(conn_rows)
 
-    # Lineage (simple: to target columns)
+    # 🧭 New ordering logic — ensures logical flow Source → Transformations → Target
+    if not conn_df.empty:
+        type_order = {
+            "Source Definition": 0,
+            "Expression": 1,
+            "Aggregator": 2,
+            "Joiner": 3,
+            "Lookup Procedure": 4,
+            "Filter": 5,
+            "Router": 6,
+            "Update Strategy": 7,
+            "Target Definition": 8,
+        }
+
+        def sort_key(row):
+            from_rank = type_order.get(row["From Type"], 99)
+            to_rank = type_order.get(row["To Type"], 99)
+            return (from_rank, to_rank)
+
+        conn_df = conn_df.sort_values(by=list(conn_df.columns), key=lambda _: conn_df.apply(sort_key, axis=1))
+        conn_df.reset_index(drop=True, inplace=True)
+
+    # Field lineage (target-focused)
     lineage_rows = []
     for _, row in conn_df.iterrows():
         if row.get("To Type") == "Target Definition":
@@ -129,9 +151,7 @@ def parse_xml_bytes(xml_bytes: bytes):
     session_attrs = {}
     if session is not None:
         for attr in findall(session, "ATTRIBUTE"):
-            k = attr.get("NAME")
-            v = attr.get("VALUE")
-            session_attrs[k] = v
+            session_attrs[attr.get("NAME")] = attr.get("VALUE")
     session_attrs_df = pd.DataFrame([session_attrs]) if session_attrs else pd.DataFrame()
 
     overview_df = pd.DataFrame(list(overview.items()), columns=["Item", "Value"])
@@ -142,9 +162,7 @@ def parse_xml_bytes(xml_bytes: bytes):
         "Target Fields": target_df,
         "Field Lineage": lineage_df,
         "Transformations": trans_df,
-        "Connectors": conn_df,
-        "Reader Settings": pd.DataFrame(),  # placeholders
-        "Writer Settings": pd.DataFrame(),
+        "Connectors": conn_df,  # now ordered
         "Session Attributes": session_attrs_df,
     }
 
@@ -152,9 +170,11 @@ def parse_xml_bytes(xml_bytes: bytes):
         "target_name": target_name,
         "mapping_name": overview["Mapping Name"],
         "workflow_name": overview["Workflow Name"],
-        "source_headers": list(source_df["Field Name"].unique()) if not source_df.empty else []
+        "source_headers": list(source_df["Field Name"].unique()) if not source_df.empty else [],
     }
+
     return tabs, meta
+
 
 def write_excel_bytes(tabs: dict) -> bytes:
     output = BytesIO()
