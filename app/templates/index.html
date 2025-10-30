@@ -1,0 +1,52 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Informatica XML → Excel / DDL / PDF</title>
+  <link href="https://cdn.jsdelivr.net/npm/@picocss/pico@2/css/pico.min.css" rel="stylesheet">
+  <style>
+    body { max-width: 980px; margin: 2rem auto; }
+    header { margin-bottom: 1.5rem; }
+    .brand { color: #8a1e02; font-weight: 700; }
+    .muted { color: #666; }
+    form { margin-top: 1rem; }
+  </style>
+</head>
+<body>
+<header>
+  <h2><span class="brand">VAAMG</span> • Informatica XML → Excel / DDL / PDF</h2>
+  <p class="muted">Upload your Informatica PowerCenter XML export. You'll receive a ZIP with an Excel summary, Oracle DDL, and a 1-page VAAMG-branded PDF.</p>
+</header>
+
+<main>
+  <article>
+    <form action="/process" method="post" enctype="multipart/form-data">
+      <label for="xml_file">Informatica XML export</label>
+      <input type="file" id="xml_file" name="xml_file" accept=".xml" required>
+
+      <details>
+        <summary>Branding (optional)</summary>
+        <div class="grid">
+          <label>Brand name
+            <input type="text" name="brand_name" value="VAAMG Consulting">
+          </label>
+          <label>Tagline
+            <input type="text" name="brand_tagline" value="Agile in Mind. Enterprise in Delivery.">
+          </label>
+          <label>Primary color (hex)
+            <input type="text" name="brand_hex" value="#8a1e02">
+          </label>
+        </div>
+      </details>
+
+      <button type="submit">Generate ZIP</button>
+    </form>
+  </article>
+</main>
+
+<footer>
+  <small class="muted">© VAAMG Consulting</small>
+</footer>
+</body>
+</html>
