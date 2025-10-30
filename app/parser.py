@@ -29,6 +29,50 @@ def parse_xml_bytes(xml_bytes: bytes):
         "Workflow Name": workflow.get("NAME") if workflow is not None else "",
         "Session Name": session.get("NAME") if session is not None else "",
     }
+    
+def detect_transformation_logic(tabs: dict, max_lines: int = 20):
+    """
+    Scan the 'Transformations' tab and extract readable logic lines
+    from expressions. Returns a list of strings (each a bullet line).
+    """
+    lines = []
+    trans_df = tabs.get("Transformations")
+    if trans_df is None or trans_df.empty:
+        return lines
+
+    # Patterns to detect (order matters for readability)
+    patterns = [
+        ("Trim",        r"\bTRIM\s*\("),
+        ("Uppercase",   r"\bUPPER\s*\("),
+        ("Lowercase",   r"\bLOWER\s*\("),
+        ("Null handling (NVL)", r"\bNVL\s*\("),
+        ("Coalesce",    r"\bCOALESCE\s*\("),
+        ("Conditional (IIF)", r"\bIIF\s*\("),
+        ("Decode",      r"\bDECODE\s*\("),
+        ("Substring",   r"\bSUBSTR\s*\("),
+        ("To Date",     r"\bTO_DATE\s*\("),
+        ("To Char",     r"\bTO_CHAR\s*\("),
+        ("Regex",       r"\bREGEXP_[A-Z_]+\s*\("),
+        ("Concatenation", r"\|\|"),
+    ]
+
+    for _, row in trans_df.iterrows():
+        expr = (row.get("Expression") or "").strip()
+        if not expr:
+            continue
+        tname = row.get("Transformation") or "Transformation"
+        pport = row.get("Port Name") or "Port"
+        for label, rgx in patterns:
+            if re.search(rgx, expr, flags=re.IGNORECASE):
+                # Trim expression preview to keep PDF neat
+                shown = expr
+                if len(shown) > 120:
+                    shown = shown[:117] + "..."
+                lines.append(f"• {label}: {tname}.{pport} → {shown}")
+                break  # one match/line per expression to avoid verbosity
+        if len(lines) >= max_lines:
+            break
+    return lines
 
     # Sources
     source_rows = []
@@ -246,52 +290,94 @@ def build_pdf_bytes(meta: dict, tabs: dict,
                     brand_name="VAAMG Consulting",
                     brand_tagline="Agile in Mind. Enterprise in Delivery.",
                     brand_hex="#8a1e02") -> bytes:
+    # Try Verdana 11pt; fallback if missing
+    matplotlib.rcParams["font.family"] = ["Verdana", "DejaVu Sans", "sans-serif"]
+    matplotlib.rcParams["font.size"] = 11
+
     mapping = meta.get("mapping_name", "")
     workflow = meta.get("workflow_name", "")
     target = meta.get("target_name", "")
     headers = meta.get("source_headers", [])
+
+    # Target columns quick view
     tgt_cols = []
     if "Target Fields" in tabs and not tabs["Target Fields"].empty:
         tgt_cols = list(tabs["Target Fields"]["Column"].astype(str).values)
 
-    fig = plt.figure(figsize=(8.27, 11.69))
-    ax = plt.axes([0,0,1,1])
-    ax.axis('off')
+    # Detect transformation logic
+    logic_lines = detect_transformation_logic(tabs, max_lines=24)
 
+    # Create the page
+    fig = plt.figure(figsize=(8.27, 11.69))  # A4 portrait
+    ax = plt.axes([0, 0, 1, 1])
+    ax.axis("off")
+
+    # Brand header bar
     brand_rgb = hex_to_rgb_tuple(brand_hex or "#8a1e02")
-    header_height = 0.12
-    ax.add_patch(Rectangle((0, 1-header_height), 1, header_height, color=brand_rgb))
+    header_h = 0.12
+    ax.add_patch(Rectangle((0, 1 - header_h), 1, header_h, color=brand_rgb))
 
-    ax.text(0.05, 0.965, brand_name, color="white", fontsize=20, va='top', ha='left', weight='bold')
-    ax.text(0.05, 0.935, brand_tagline, color="white", fontsize=11, va='top', ha='left')
+    # Brand text
+    ax.text(0.05, 0.965, brand_name, color="white", fontsize=18, va="top", ha="left", weight="bold")
+    ax.text(0.05, 0.935, brand_tagline, color="white", fontsize=11, va="top", ha="left")
 
-    ax.text(0.05, 0.84, "Informatica Mapping – Business Summary", fontsize=16, weight='bold', ha='left', va='top')
+    # Section helpers
+    def section_title(y, title):
+        ax.text(0.05, y, title, fontsize=13, weight="bold", va="top", ha="left")
+        return y - 0.02  # space after title
 
-    overview_lines = [
-        f"Mapping: {mapping}",
-        f"Workflow: {workflow}",
-        f"Source headers: {', '.join(headers) if headers else '(none found)'}",
-        f"Target table: {target}",
-        f"Target columns: {', '.join(tgt_cols)}" if tgt_cols else "Target columns: (none found)",
-        "Business highlights:",
-        " • Trims key identifiers prior to load (if defined in expressions)",
-        " • Integration ID derivations and HR lookups (if present in XML)",
-        " • Typical load settings: bulk insert / truncate-before-load (if set in session attributes)",
+    def block_lines(y, items, line_gap=0.02, wrap_at=115):
+        """
+        Render a list of strings with automatic wrapping.
+        Returns updated y.
+        """
+        for item in items:
+            # Wrap long lines to avoid overflow
+            from textwrap import wrap
+            wrapped = wrap(item, wrap_at) if len(item) > wrap_at else [item]
+            for w in wrapped:
+                ax.text(0.05, y, w, fontsize=11, va="top", ha="left")
+                y -= line_gap
+        return y - 0.01  # extra gap after the block
+
+    y = 0.84
+
+    # Title of document
+    ax.text(0.05, y, "Informatica Mapping — Business Summary", fontsize=14, weight="bold", va="top", ha="left")
+    y -= 0.035
+
+    # Overview section
+    y = section_title(y, "Overview")
+    overview_items = [
+        f"Mapping: {mapping or '(n/a)'}",
+        f"Workflow: {workflow or '(n/a)'}",
     ]
-    wrapped = []
-    for ln in overview_lines:
-        if len(ln) > 110:
-            wrapped.extend(wrap(ln, 110))
-        else:
-            wrapped.append(ln)
-    body_text = "\n".join(wrapped)
-    ax.text(0.05, 0.80, body_text, fontsize=11, va='top', ha='left')
+    y = block_lines(y, overview_items)
 
-    ax.text(0.05, 0.06, "Auto-generated from Informatica XML", fontsize=9, color="gray", ha='left', va='bottom')
-    ax.text(0.95, 0.06, brand_name, fontsize=9, color="gray", ha='right', va='bottom')
+    # Source & Target quick facts
+    y = section_title(y, "Source & Target")
+    st_items = [
+        f"Source headers: {', '.join(headers) if headers else '(none found)'}",
+        f"Target table: {target or '(n/a)'}",
+        f"Target columns: {', '.join(tgt_cols) if tgt_cols else '(none found)'}",
+    ]
+    y = block_lines(y, st_items)
 
+    # Detected transformation logic
+    y = section_title(y, "Detected Transformation Logic")
+    if logic_lines:
+        y = block_lines(y, logic_lines, line_gap=0.021, wrap_at=115)
+    else:
+        y = block_lines(y, ["• No specific transformation expressions detected."], line_gap=0.021)
+
+    # Footer
+    ax.text(0.05, 0.06, "Auto-generated from Informatica XML", fontsize=9, color="gray", ha="left", va="bottom")
+    ax.text(0.95, 0.06, brand_name, fontsize=9, color="gray", ha="right", va="bottom")
+
+    from io import BytesIO
     bio = BytesIO()
     fig.savefig(bio, format="pdf", bbox_inches="tight")
     plt.close(fig)
     bio.seek(0)
     return bio.read()
+
