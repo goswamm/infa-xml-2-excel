@@ -8,7 +8,7 @@ import re
 
 from .parser import parse_xml_bytes, write_excel_bytes, build_target_sql, build_pdf_bytes
 
-app = FastAPI(title="Informatica XML → Excel/DDL/PDF")
+app = FastAPI(title="Informatica XML → Documentation Generator")
 templates = Jinja2Templates(directory="app/templates")
 
 
