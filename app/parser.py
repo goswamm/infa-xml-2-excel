@@ -7,7 +7,10 @@ from matplotlib.patches import Rectangle
 from textwrap import wrap
 import re
 
-# ---------- helpers ----------
+# =========================
+# Utilities
+# =========================
+
 def findall(elem, tag):
     return elem.findall(f".//{tag}") if elem is not None else []
 
@@ -27,11 +30,15 @@ def _empty_tabs():
         "Session Attributes": pd.DataFrame(),
     }
 
-# ---------- main parse ----------
+
+# =========================
+# XML → DataFrames
+# =========================
+
 def parse_xml_bytes(xml_bytes: bytes):
     """
-    Always returns (tabs: dict[str, DataFrame], meta: dict).
-    On parse issues, returns safe empty data instead of None.
+    Parse Informatica PowerCenter XML into dataframes.
+    Always returns (tabs: dict[str, DataFrame], meta: dict), even on errors.
     """
     tabs = _empty_tabs()
     meta = {
@@ -47,7 +54,6 @@ def parse_xml_bytes(xml_bytes: bytes):
     try:
         root = ET.fromstring(xml_bytes)
     except Exception:
-        # Malformed XML → return safe empties
         return tabs, meta
 
     repo = findfirst(root, "REPOSITORY")
@@ -56,7 +62,6 @@ def parse_xml_bytes(xml_bytes: bytes):
     workflow = findfirst(root, "WORKFLOW")
     session = findfirst(workflow, "SESSION") if workflow is not None else None
 
-    # Overview
     overview = {
         "Repository": repo.get("NAME") if repo is not None else "",
         "Folder": folder.get("NAME") if folder is not None else "",
@@ -105,7 +110,7 @@ def parse_xml_bytes(xml_bytes: bytes):
     tgt_df = pd.DataFrame(target_rows)
     tabs["Target Fields"] = tgt_df
 
-    # Transformations (incl. attributes like lookup overrides)
+    # Transformations (ports + notable table attributes)
     trans_rows = []
     if mapping is not None:
         for tr in findall(mapping, "TRANSFORMATION"):
@@ -139,7 +144,7 @@ def parse_xml_bytes(xml_bytes: bytes):
     trans_df = pd.DataFrame(trans_rows)
     tabs["Transformations"] = trans_df
 
-    # Connectors + ordering (Source → transforms → Target)
+    # Connectors (order Source → transforms → Target)
     conn_rows = []
     if mapping is not None:
         for c in findall(mapping, "CONNECTOR"):
@@ -156,7 +161,7 @@ def parse_xml_bytes(xml_bytes: bytes):
     if not conn_df.empty:
         type_order = {
             "Source Definition": 0,
-            # common transforms in a reasonable order
+            # common transforms in a reasonable flow order
             "Expression": 10,
             "Aggregator": 11,
             "Joiner": 12,
@@ -175,14 +180,18 @@ def parse_xml_bytes(xml_bytes: bytes):
             return fr * 100 + to
 
         conn_df["__rank"] = conn_df.apply(_rank, axis=1)
-        conn_df = conn_df.sort_values(
-            by=["__rank", "From Type", "From Instance", "To Type", "To Instance", "From Field", "To Field"],
-            kind="stable"
-        ).drop(columns="__rank").reset_index(drop=True)
+        conn_df = (
+            conn_df.sort_values(
+                by=["__rank", "From Type", "From Instance", "To Type", "To Instance", "From Field", "To Field"],
+                kind="stable"
+            )
+            .drop(columns="__rank")
+            .reset_index(drop=True)
+        )
 
     tabs["Connectors"] = conn_df
 
-    # Lineage (target-focused)
+    # Field lineage (only links that end at target)
     lineage_rows = []
     for _, row in conn_df.iterrows():
         if str(row.get("To Type")) == "Target Definition":
@@ -210,7 +219,11 @@ def parse_xml_bytes(xml_bytes: bytes):
     }
     return tabs, meta
 
-# ---------- excel ----------
+
+# =========================
+# Excel writer
+# =========================
+
 def write_excel_bytes(tabs: dict) -> bytes:
     output = BytesIO()
     with pd.ExcelWriter(output, engine="xlsxwriter") as xlw:
@@ -221,54 +234,170 @@ def write_excel_bytes(tabs: dict) -> bytes:
     output.seek(0)
     return output.read()
 
-# ---------- ddl ----------
-def oracle_type(datatype, precision, scale):
-    dt = (str(datatype) or "").upper()
-    precision = str(precision) if precision is not None else ""
-    scale = str(scale) if scale is not None else ""
-    if dt in ("VARCHAR", "VARCHAR2"):
-        return f"VARCHAR2({precision})" if precision.isdigit() else "VARCHAR2(255)"
-    if dt == "CHAR":
-        return f"CHAR({precision})" if precision.isdigit() else "CHAR(1)"
-    if dt in ("NUMBER", "DECIMAL", "NUMERIC", "INTEGER", "INT", "SMALLINT"):
-        if precision.isdigit():
-            return f"NUMBER({precision},{scale})" if scale.isdigit() else f"NUMBER({precision})"
-        return "NUMBER"
-    if dt == "DATE":
-        return "DATE"
-    if dt.startswith("TIMESTAMP"):
-        return "TIMESTAMP"
-    return "VARCHAR2(255)"
 
-def build_target_sql(meta: dict, target_df: pd.DataFrame) -> str:
+# =========================
+# Dialect-aware DDL
+# =========================
+
+def map_type_for_db(datatype, precision, scale, db: str):
+    """
+    Map Informatica field type to a target database type.
+    Covers: oracle, sqlserver, postgres, mysql, snowflake.
+    """
+    dt = (str(datatype) or "").upper()
+    p = str(precision) if precision is not None else ""
+    s = str(scale) if scale is not None else ""
+
+    def _num():
+        if p.isdigit():
+            return (p, s) if s.isdigit() else (p, None)
+        return (None, None)
+
+    db = (db or "oracle").lower()
+
+    if db == "oracle":
+        if dt in ("VARCHAR", "VARCHAR2"):
+            return f"VARCHAR2({p})" if p.isdigit() else "VARCHAR2(255)"
+        if dt == "CHAR":
+            return f"CHAR({p})" if p.isdigit() else "CHAR(1)"
+        if dt in ("NUMBER","DECIMAL","NUMERIC","INTEGER","INT","SMALLINT"):
+            pp, ss = _num()
+            if pp and ss is not None:
+                return f"NUMBER({pp},{ss})"
+            if pp:
+                return f"NUMBER({pp})"
+            return "NUMBER"
+        if dt == "DATE":
+            return "DATE"
+        if dt.startswith("TIMESTAMP"):
+            return "TIMESTAMP"
+        return "VARCHAR2(255)"
+
+    if db == "sqlserver":
+        if dt in ("VARCHAR", "VARCHAR2", "NVARCHAR"):
+            return f"VARCHAR({p})" if p.isdigit() else "VARCHAR(255)"
+        if dt == "CHAR":
+            return f"CHAR({p})" if p.isdigit() else "CHAR(1)"
+        if dt in ("NUMBER","DECIMAL","NUMERIC"):
+            pp, ss = _num()
+            if pp and ss is not None:
+                return f"DECIMAL({pp},{ss})"
+            if pp:
+                return f"DECIMAL({pp})"
+            return "DECIMAL(38,10)"
+        if dt in ("INTEGER","INT","SMALLINT","BIGINT"):
+            return "INT"
+        if dt == "DATE":
+            return "DATE"
+        if dt.startswith("TIMESTAMP") or dt in ("DATETIME","SMALLDATETIME"):
+            return "DATETIME"
+        return "VARCHAR(255)"
+
+    if db == "postgres":
+        if dt in ("VARCHAR", "VARCHAR2"):
+            return f"VARCHAR({p})" if p.isdigit() else "VARCHAR(255)"
+        if dt == "CHAR":
+            return f"CHAR({p})" if p.isdigit() else "CHAR(1)"
+        if dt in ("NUMBER","DECIMAL","NUMERIC"):
+            pp, ss = _num()
+            if pp and ss is not None:
+                return f"NUMERIC({pp},{ss})"
+            if pp:
+                return f"NUMERIC({pp})"
+            return "NUMERIC"
+        if dt in ("INTEGER","INT","SMALLINT","BIGINT"):
+            return "INTEGER"
+        if dt == "DATE":
+            return "DATE"
+        if dt.startswith("TIMESTAMP"):
+            return "TIMESTAMP"
+        return "VARCHAR(255)"
+
+    if db == "mysql":
+        if dt in ("VARCHAR", "VARCHAR2"):
+            return f"VARCHAR({p})" if p.isdigit() else "VARCHAR(255)"
+        if dt == "CHAR":
+            return f"CHAR({p})" if p.isdigit() else "CHAR(1)"
+        if dt in ("NUMBER","DECIMAL","NUMERIC"):
+            pp, ss = _num()
+            if pp and ss is not None:
+                return f"DECIMAL({pp},{ss})"
+            if pp:
+                return f"DECIMAL({pp})"
+            return "DECIMAL(38,10)"
+        if dt in ("INTEGER","INT","SMALLINT","BIGINT"):
+            return "INT"
+        if dt == "DATE":
+            return "DATE"
+        if dt.startswith("TIMESTAMP") or dt == "DATETIME":
+            return "DATETIME"
+        return "VARCHAR(255)"
+
+    if db == "snowflake":
+        if dt in ("VARCHAR","VARCHAR2","STRING","TEXT"):
+            return f"VARCHAR({p})" if p.isdigit() else "VARCHAR"
+        if dt == "CHAR":
+            return f"CHAR({p})" if p.isdigit() else "CHAR(1)"
+        if dt in ("NUMBER","DECIMAL","NUMERIC"):
+            pp, ss = _num()
+            if pp and ss is not None:
+                return f"NUMBER({pp},{ss})"
+            if pp:
+                return f"NUMBER({pp})"
+            return "NUMBER"
+        if dt in ("INTEGER","INT","SMALLINT","BIGINT"):
+            return "NUMBER(38,0)"
+        if dt == "DATE":
+            return "DATE"
+        if dt.startswith("TIMESTAMP"):
+            return "TIMESTAMP_NTZ"
+        return "VARCHAR"
+
+    return "VARCHAR(255)"  # fallback
+
+
+def build_target_sql(meta: dict, target_df: pd.DataFrame, target_db: str = "oracle") -> str:
+    """
+    Create dialect-specific DDL with a separate PK constraint.
+    """
     tname = meta.get("target_name") or "TARGET_TABLE"
     if target_df is None or target_df.empty:
-        return f"/* No target found in XML; create your table manually: {tname} */"
+        return f"-- No target fields found in XML for table {tname}"
+
     cols, pk_cols = [], []
     for _, r in target_df.iterrows():
         colname = r.get("Column")
-        dtype = oracle_type(r.get("Datatype"), r.get("Precision"), r.get("Scale"))
-        nullable = "" if (str(r.get("Nullable")).upper() == "NOTNULL") else " NULL"
-        cols.append(f"  {colname} {dtype}{nullable}")
+        dtype = map_type_for_db(r.get("Datatype"), r.get("Precision"), r.get("Scale"), target_db)
+        not_null = " NOT NULL" if (str(r.get("Nullable")).upper() == "NOTNULL") else ""
+        cols.append(f"  {colname} {dtype}{not_null}")
         if str(r.get("Key Type")).upper() == "PRIMARY KEY":
             pk_cols.append(colname)
-    lines = [f"CREATE TABLE {tname} (", ",\n".join(cols), ");"]
-    if pk_cols:
-        lines.append(f"ALTER TABLE {tname} ADD CONSTRAINT PK_{tname} PRIMARY KEY ({', '.join(pk_cols)});")
-    return "\n".join(lines)
 
-# ---------- transformation logic detection ----------
+    db = (target_db or "oracle").lower()
+    create = [f"CREATE TABLE {tname} (", ",\n".join(cols), ");"]
+    if pk_cols:
+        if db in ("postgres", "mysql", "sqlserver", "oracle", "snowflake"):
+            create.append(f"ALTER TABLE {tname} ADD CONSTRAINT PK_{tname} PRIMARY KEY ({', '.join(pk_cols)});")
+        else:
+            create.append(f"-- PRIMARY KEY ({', '.join(pk_cols)})")
+
+    return "\n".join(create)
+
+
+# =========================
+# Transformation logic detection
+# =========================
+
 def detect_transformation_logic(tabs: dict, max_lines: int = 40):
     """
-    Scan 'Transformations' and extract readable logic lines based on common functions/patterns.
-    Caps the number of lines to keep PDF concise.
+    Extract readable bullet lines from transformation expressions
+    using common function/pattern detection.
     """
     lines = []
     trans_df = tabs.get("Transformations")
     if trans_df is None or trans_df.empty:
         return lines
 
-    # Order matters for readability (grouped by category)
     patterns = [
         # String
         ("Trim",        r"\bTRIM\s*\("),
@@ -310,7 +439,7 @@ def detect_transformation_logic(tabs: dict, max_lines: int = 40):
         ("Cast",        r"\bCAST\s*\("),
         ("Convert",     r"\bCONVERT\s*\("),
 
-        # Aggregate & window (appear in mappings occasionally)
+        # Aggregate & window
         ("Aggregate SUM",   r"\bSUM\s*\("),
         ("Aggregate AVG",   r"\bAVG\s*\("),
         ("Aggregate COUNT", r"\bCOUNT\s*\("),
@@ -343,13 +472,17 @@ def detect_transformation_logic(tabs: dict, max_lines: int = 40):
     return lines
 
 
-# ---------- pdf ----------
+# =========================
+# PDF builder
+# =========================
+
 def hex_to_rgb_tuple(hex_color: str):
     hex_color = hex_color.strip().lstrip("#")
     if len(hex_color) == 3:
         hex_color = "".join([c*2 for c in hex_color])
     if len(hex_color) != 6:
-        return (138/255, 30/255, 2/255)  # VAAMG default brand colour
+        # VAAMG brand default fallback (#8a1e02)
+        return (138/255, 30/255, 2/255)
     r = int(hex_color[0:2], 16)/255.0
     g = int(hex_color[2:4], 16)/255.0
     b = int(hex_color[4:6], 16)/255.0
@@ -359,7 +492,7 @@ def build_pdf_bytes(meta: dict, tabs: dict,
                     brand_name="VAAMG Consulting",
                     brand_tagline="Agile in Mind. Enterprise in Delivery.",
                     brand_hex="#8a1e02") -> bytes:
-    # Verdana 11pt (fallback to DejaVu Sans if Verdana not installed)
+    # Verdana 11pt with fallbacks (Render base image rarely has Verdana)
     matplotlib.rcParams["font.family"] = ["Verdana", "DejaVu Sans", "sans-serif"]
     matplotlib.rcParams["font.size"] = 11
 
@@ -372,7 +505,7 @@ def build_pdf_bytes(meta: dict, tabs: dict,
     if "Target Fields" in tabs and not tabs["Target Fields"].empty:
         tgt_cols = list(tabs["Target Fields"]["Column"].astype(str).values)
 
-    logic_lines = detect_transformation_logic(tabs, max_lines=24)
+    logic_lines = detect_transformation_logic(tabs, max_lines=40)
 
     fig = plt.figure(figsize=(8.27, 11.69))  # A4 portrait
     ax = plt.axes([0, 0, 1, 1])
