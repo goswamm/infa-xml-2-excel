@@ -258,25 +258,72 @@ def build_target_sql(meta: dict, target_df: pd.DataFrame) -> str:
     return "\n".join(lines)
 
 # ---------- transformation logic detection ----------
-def detect_transformation_logic(tabs: dict, max_lines: int = 24):
+def detect_transformation_logic(tabs: dict, max_lines: int = 40):
+    """
+    Scan 'Transformations' and extract readable logic lines based on common functions/patterns.
+    Caps the number of lines to keep PDF concise.
+    """
     lines = []
     trans_df = tabs.get("Transformations")
     if trans_df is None or trans_df.empty:
         return lines
 
+    # Order matters for readability (grouped by category)
     patterns = [
+        # String
         ("Trim",        r"\bTRIM\s*\("),
+        ("Left Trim",   r"\bLTRIM\s*\("),
+        ("Right Trim",  r"\bRTRIM\s*\("),
         ("Uppercase",   r"\bUPPER\s*\("),
         ("Lowercase",   r"\bLOWER\s*\("),
-        ("Null handling (NVL)", r"\bNVL\s*\("),
+        ("Concat",      r"\|\||\bCONCAT\s*\("),
+        ("Substring",   r"\bSUBSTR(?:ING)?\s*\("),
+        ("Replace",     r"\bREPLACE\s*\("),
+        ("Length",      r"\bLENGTH\s*\(|\bLEN\s*\("),
+        ("Position",    r"\bCHARINDEX\s*\(|\bPOSITION\s*\(|\bINSTR\s*\("),
+        ("Left Pad",    r"\bLPAD\s*\("),
+        ("Right Pad",   r"\bRPAD\s*\("),
+
+        # Numeric
+        ("Round",       r"\bROUND\s*\("),
+        ("Ceiling",     r"\bCEIL(?:ING)?\s*\("),
+        ("Floor",       r"\bFLOOR\s*\("),
+        ("Absolute",    r"\bABS\s*\("),
+        ("Modulo",      r"\bMOD\s*\("),
+        ("Power",       r"\bPOWER\s*\("),
+        ("Square Root", r"\bSQRT\s*\("),
+
+        # Date/Time
+        ("Now",         r"\bGETDATE\s*\(|\bNOW\s*\(|\bCURRENT_TIMESTAMP\b"),
+        ("Date Add",    r"\bDATEADD\s*\(|\bDATE_ADD\s*\("),
+        ("Date Diff",   r"\bDATEDIFF\s*\(|\bDATE_DIFF\s*\("),
+        ("Extract/Datepart", r"\bEXTRACT\s*\(|\bDATEPART\s*\("),
+        ("Format/To Char",   r"\bFORMAT\s*\(|\bTO_CHAR\s*\("),
+
+        # Conditional
+        ("CASE",        r"\bCASE\b"),
         ("Coalesce",    r"\bCOALESCE\s*\("),
-        ("Conditional (IIF)", r"\bIIF\s*\("),
-        ("Decode",      r"\bDECODE\s*\("),
-        ("Substring",   r"\bSUBSTR\s*\("),
-        ("To Date",     r"\bTO_DATE\s*\("),
-        ("To Char",     r"\bTO_CHAR\s*\("),
+        ("NullIf",      r"\bNULLIF\s*\("),
+        ("IsNull/NVL",  r"\bISNULL\s*\(|\bNVL\s*\("),
+
+        # Type conversion
+        ("Cast",        r"\bCAST\s*\("),
+        ("Convert",     r"\bCONVERT\s*\("),
+
+        # Aggregate & window (appear in mappings occasionally)
+        ("Aggregate SUM",   r"\bSUM\s*\("),
+        ("Aggregate AVG",   r"\bAVG\s*\("),
+        ("Aggregate COUNT", r"\bCOUNT\s*\("),
+        ("Aggregate MIN",   r"\bMIN\s*\("),
+        ("Aggregate MAX",   r"\bMAX\s*\("),
+        ("Row Number",      r"\bROW_NUMBER\s*\("),
+        ("Rank",            r"\bRANK\s*\("),
+        ("Dense Rank",      r"\bDENSE_RANK\s*\("),
+        ("Lag",             r"\bLAG\s*\("),
+        ("Lead",            r"\bLEAD\s*\("),
+
+        # Regex (carry-over)
         ("Regex",       r"\bREGEXP_[A-Z_]+\s*\("),
-        ("Concatenation", r"\|\|"),
     ]
 
     for _, row in trans_df.iterrows():
@@ -285,14 +332,16 @@ def detect_transformation_logic(tabs: dict, max_lines: int = 24):
             continue
         tname = row.get("Transformation") or "Transformation"
         pport = row.get("Port Name") or "Port"
+
         for label, rgx in patterns:
             if re.search(rgx, expr, flags=re.IGNORECASE):
-                shown = expr if len(expr) <= 120 else (expr[:117] + "...")
+                shown = expr if len(expr) <= 160 else (expr[:157] + "...")
                 lines.append(f"• {label}: {tname}.{pport} → {shown}")
-                break
+                break  # one bullet per expression
         if len(lines) >= max_lines:
             break
     return lines
+
 
 # ---------- pdf ----------
 def hex_to_rgb_tuple(hex_color: str):
