@@ -22,26 +22,36 @@
 <main>
   <article>
     <form action="/process" method="post" enctype="multipart/form-data">
-      <label for="xml_file">Informatica XML export</label>
-      <input type="file" id="xml_file" name="xml_file" accept=".xml" required>
+  <label for="xml_file">Informatica XML export</label>
+  <input type="file" id="xml_file" name="xml_file" accept=".xml" required>
 
-      <details>
-        <summary>Branding (optional)</summary>
-        <div class="grid">
-          <label>Brand name
-            <input type="text" name="brand_name" value="VAAMG Consulting">
-          </label>
-          <label>Tagline
-            <input type="text" name="brand_tagline" value="Agile in Mind. Enterprise in Delivery.">
-          </label>
-          <label>Primary color (hex)
-            <input type="text" name="brand_hex" value="#8a1e02">
-          </label>
-        </div>
-      </details>
+  <label for="target_db">Target database type</label>
+  <select id="target_db" name="target_db" required>
+    <option value="oracle" selected>Oracle</option>
+    <option value="sqlserver">SQL Server</option>
+    <option value="postgres">PostgreSQL</option>
+    <option value="mysql">MySQL</option>
+    <option value="snowflake">Snowflake</option>
+  </select>
 
-      <button type="submit">Generate ZIP</button>
-    </form>
+  <details>
+    <summary>Branding (optional)</summary>
+    <div class="grid">
+      <label>Brand name
+        <input type="text" name="brand_name" value="VAAMG Consulting">
+      </label>
+      <label>Tagline
+        <input type="text" name="brand_tagline" value="Agile in Mind. Enterprise in Delivery.">
+      </label>
+      <label>Primary color (hex)
+        <input type="text" name="brand_hex" value="#8a1e02">
+      </label>
+    </div>
+  </details>
+
+  <button type="submit">Generate ZIP</button>
+</form>
+
   </article>
 </main>
 
